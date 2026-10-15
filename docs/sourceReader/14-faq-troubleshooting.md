@@ -23,12 +23,20 @@ docker run --rm --gpus all nvidia/cuda:12.2-base nvidia-smi
 
 ### Q: Docker image pull fails?
 
-**A**: 网络问题，尝试使用镜像加速器：
+**A**: 网络问题，按优先级换源：
 
 ```bash
-# 国内用户可使用阿里云/腾讯云镜像
-docker pull registry.cn-hangzhou.aliyuncs.com/tabbyml/tabby:latest
+# 1) 官方自建 registry（website/docs/quick-start/installation/*.mdx 里统一用它）
+docker pull registry.tabbyml.com/tabbyml/tabby
+
+# 2) GHCR（docker.yml 同时推 ghcr.io/tabbyml/tabby）
+docker pull ghcr.io/tabbyml/tabby
+
+# 3) 通用加速器：把你的镜像加速前缀拼在原镜像名前面（示例写法，前缀取决于你所在网络提供的加速器）
+docker pull <your-mirror-prefix>/tabbyml/tabby
 ```
+
+> 注意：仓库里**没有**任何证据表明 TabbyML 在阿里云 / 腾讯云等公共云 registry 上发布了官方镜像，因此不要把某个具体云厂商域名当官方源写进部署脚本。
 
 ### Q: Model download hangs or fails?
 
@@ -38,15 +46,18 @@ docker pull registry.cn-hangzhou.aliyuncs.com/tabbyml/tabby:latest
 # Check available disk space
 df -h ~/.tabby/models/
 
-# Use a mirror for China users (set model download URL)
-export TABBY_MODEL_DOWNLOAD_TIMEOUT=600
+# 换下载源：只有这两个环境变量（见 crates/tabby-download/src/lib.rs · download_host()）
+#   TABBY_DOWNLOAD_HOST=huggingface.co        （默认值，直接改写 host）
+#   TABBY_HUGGINGFACE_HOST_OVERRIDE=...       （覆盖 huggingface host）
+# 注意：**没有** TABBY_MODEL_DOWNLOAD_TIMEOUT 这个变量，超时不可配。
+export TABBY_DOWNLOAD_HOST=hf-mirror.com
 
-# Manual download
-mkdir -p ~/.tabby/models/tabbyml_qwen2.5-coder-7b/ggml
-curl -L https://huggingface.co/... > ~/.tabby/models/tabbyml_qwen2.5-coder-7b/ggml/model-00001-of-00001.gguf
+# Manual download：目录形态是 {models_dir}/{Registry}/{Name}/ggml，入口文件以 model-00001-of- 开头
+mkdir -p ~/.tabby/models/TabbyML/Qwen2.5-Coder-7B/ggml
+curl -L https://huggingface.co/... > ~/.tabby/models/TabbyML/Qwen2.5-Coder-7B/ggml/model-00001-of-00001.gguf
 
-# Verify tabby.json exists
-echo '{"prompt_template":"<PRE>{prefix}<SUF>{suffix}<MID>"}' > ~/.tabby/models/tabbyml_qwen2.5-coder-7b/tabby.json
+# Verify tabby.json exists（放在 {Name} 这一层，不在 ggml/ 里）
+echo '{"prompt_template":"<PRE>{prefix}<SUF>{suffix}<MID>"}' > ~/.tabby/models/TabbyML/Qwen2.5-Coder-7B/tabby.json
 ```
 
 ### Q: Cannot access the web UI?
@@ -239,14 +250,14 @@ curl https://auth.example.com/.well-known/openid-configuration | jq .issuer
 # Stop server first
 docker compose down tabby
 
-# Replace with backup
-cp /backup/tabby_latest.db ~/.tabby/db/default.sqlite
+# Replace with backup（prod 编译的库文件是 ~/.tabby/ee/db.sqlite，dev 编译是 dev-db.sqlite）
+cp /backup/tabby_latest.db ~/.tabby/ee/db.sqlite
 
 # Start server
 docker compose up -d tabby
 
-# Verify migrations are current
-sqlite3 ~/.tabby/db/default.sqlite "SELECT * FROM _schema_migrations ORDER BY id DESC LIMIT 1;"
+# Verify migrations are current（sqlx 的记账表叫 `_sqlx_migrations`，不是 `_schema_migrations`）
+sqlite3 ~/.tabby/ee/db.sqlite "SELECT version, description, installed_on FROM _sqlx_migrations ORDER BY version DESC LIMIT 1;"
 ```
 
 ### Q: Database file is too large?
@@ -254,10 +265,12 @@ sqlite3 ~/.tabby/db/default.sqlite "SELECT * FROM _schema_migrations ORDER BY id
 **A**: Run VACUUM to reclaim space：
 
 ```sql
-sqlite3 ~/.tabby/db/default.sqlite "VACUUM;"
+sqlite3 ~/.tabby/ee/db.sqlite "VACUUM;"
 ```
 
-Or trigger the automated daily maintenance job in Admin Panel.
+有一个**每小时**跑的自动清理作业 `DbMaintenanceJob`（`ee/tabby-webserver/src/service/background_job/db.rs · DbMaintenanceJob`，由 `HourlyJob::run` 调用），它删的是**行**：过期 refresh token、过期 password reset、过期 ephemeral thread、已失效 source 的 read access policy，外加对 `job_runs` / `user_events` 做 3 个月数据保留。
+
+但它**不做 VACUUM**，所以删完行主库文件不会变小 —— 磁盘占用只能靠手工 `VACUUM` 回收（建议先停服：SQLite 在 WAL 模式下 VACUUM 需要独占写权限，运行中执行容易报 `database is locked`）。另一个 hourly 作业 `IndexGarbageCollection` 清的是 Tantivy 索引目录（`~/.tabby/index/`），跟 SQLite 无关。
 
 ---
 
@@ -312,7 +325,8 @@ code_search_params.num_to_score = 50     # Smaller candidate pool (default: 100)
 |------|--------|
 | Network reachability | `nc -vz smtp.example.com 587` |
 | Credentials correct | Test with Thunderbird/Mail.app first |
-| TLS version mismatch | Try `tls_enabled: false` for port 25 (unencrypted) |
+| 加密方式不匹配 | Admin → Email 里的 `encryption` 字段（GraphQL 枚举 `Encryption`，源码变体 `StartTls` / `SslTls` / `None`，见 `ee/tabby-schema/src/schema/email.rs`）：25/587 用 `StartTls`，465 用 `SslTls`。**没有** `tls_enabled` 布尔开关 |
+| 认证方式不匹配 | 同页的 `auth_method`（枚举 `AuthMethod`：`None` / `Plain` / `Login`）要与服务商要求对齐 |
 | Port firewall | Some providers block port 25/587; use 465 (SSL) instead |
 
 ### Q: Emails go to spam?
@@ -347,11 +361,11 @@ curl http://localhost:8080/metrics | grep tabby
 ### Database
 
 ```bash
-# Check migration status
-sqlite3 ~/.tabby/db/default.sqlite "SELECT name, applied_at FROM _schema_migrations ORDER BY id;"
+# Check migration status（记账表 `_sqlx_migrations`，列见 ee/tabby-db/schema.sqlite）
+sqlite3 ~/.tabby/ee/db.sqlite "SELECT version, description, success FROM _sqlx_migrations ORDER BY version;"
 
-# Count entities
-sqlite3 ~/.tabby/db/default.sqlite "SELECT 'users', count(*) FROM _users UNION ALL SELECT 'repos', count(*) FROM _git_repositories;"
+# Count entities（业务表都**不带**下划线前缀：users / repositories / threads / …）
+sqlite3 ~/.tabby/ee/db.sqlite "SELECT 'users', count(*) FROM users UNION ALL SELECT 'repos', count(*) FROM repositories;"
 
 # Disk usage
 du -sh ~/.tabby/

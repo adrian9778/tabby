@@ -35,9 +35,11 @@ api_endpoint = "http://localhost:8888"
 ### 工作原理
 
 ```
-config.toml [model.completion.local]
-    → tabby download --model <model-id>
-    → GGUF files in ~/.tabby/models/<owner>_<name>/ggml/
+config.toml 的 `[model]` 组（`ModelConfigGroup { completion, chat, embedding }`，
+    每个槽位是一个 `ModelConfig`，只有 `Http` / `Local` 两个变体，
+    local/http 的区别由 `[[model.completion]]` 下的 `kind` + 字段决定，不是三套配置节）
+    → tabby download --model <model-id>（裸名默认 registry = TabbyML）
+    → GGUF files in ~/.tabby/models/<Registry>/<Name>/ggml/
     → llama-cpp-server crate launches process
     → HTTP server at localhost:{port} for inference
 ```
@@ -45,10 +47,10 @@ config.toml [model.completion.local]
 ### Model Directory Structure (MODEL_SPEC.md)
 
 ```
-~/.tabby/models/tabbyml_starcoder-1b/
-├── tabby.json                # Model metadata (prompt_template, chat_template)
+~/.tabby/models/TabbyML/StarCoder-1B/     # {models_dir}/{registry}/{name}，见 registry.rs · get_model_dir()
+├── tabby.json                # Model metadata (prompt_template, chat_template)，下载时由 save_model_info() 写入
 └── ggml/
-    └── model-00001-of-00001.gguf   # Binary model weights (GGUF format)
+    └── model-00001-of-00001.gguf   # Binary model weights (GGUF format)，入口按 model-00001-of- 前缀识别
 ```
 
 ### tabby.json 规范
@@ -325,22 +327,38 @@ model_name = "voyage-code-3"     # Best for code embedding
 
 如果要新增一个模型后端提供商，需要：
 
-1. **在 `http-api-bindings/` 中实现新的 adapter**：
+1. **在 `http-api-bindings/` 中实现新的 adapter**（该 crate 只有 `completion/{llama,mistral,openai}.rs`、`embedding/{azure,llama,mistral,openai}.rs`、`chat/mod.rs`、`rate_limit.rs`、`lib.rs` 这几份文件，**没有 `new_provider.rs` 这类注册表文件**）：
    ```rust
-   // crates/http-api-bindings/src/completion/new_provider.rs
+   // 新建 crates/http-api-bindings/src/completion/<provider>.rs（尖括号是占位符，按 provider 取名）
+   use async_trait::async_trait;
+   use tabby_inference::{CompletionOptions, CompletionStream};
+
+   #[async_trait]
    impl CompletionStream for MyProvider {
-       async fn completion(&self, params: CompletionParams) -> Result<CompletionResponse> {
+       // trait 唯一必须实现的是 generate（`generate_sync` 有默认实现）
+       async fn generate(
+           &self,
+           prompt: &str,
+           options: CompletionOptions,
+       ) -> BoxStream<'life0, String> {
            // Make HTTP request to the provider's API
            // Parse response into tabby-inference types
        }
    }
    ```
 
-2. **注册 kind 字符串**：在 config parsing 时识别 `kind = "my-provider/completion"`
+2. **在 `completion/mod.rs · create()` 的 `match model.kind.as_str()` 里加一个分支**（`embedding/mod.rs · create()`、`chat/mod.rs · create()` 同理），并在文件顶部 `mod my_provider;`。kind 字符串本身没有集中枚举：`HttpModelConfig.kind` 是裸 `String`，未命中的值会落到最后一个 `unsupported_kind => panic!(...)` 分支——**注意是 `panic!` 而不是返回错误**，配置写错 kinds 会让进程在装载模型时直接崩。
+   参照现有别名常量 `OPENAI_LEGACY_COMPLETION_FIM_ALIASES`（一个 `[&str; 3]`），多个 kind 复用同一 engine 时用 `x if ALIASES.contains(&x)` 这种 match guard。
 
-3. **更新 MODEL_SPEC.md** 文档，说明 prompt_template 和 chat_template
+3. **别忘了 `build_completion_prompt()`**：同一个 `completion/mod.rs` 里它按 kind 决定用内置 FIM 模板（`"{prefix}<|FIM|>{suffix}"`）还是用户配置里的 `prompt_template`/`chat_template`。新 provider 若走 FIM 约定，要在这里一并登记。
 
-4. **添加 integration test**:
+4. **上游调用点有两处**（改返回值形态时两处都要看）：`crates/tabby/src/services/model/mod.rs`（`http_api_bindings::create` / `create_chat` / `build_completion_prompt`）与 `crates/llama-cpp-server/src/lib.rs`（本地模型托管路径同样会转调 http-api-bindings）。`ollama/completion`、`ollama/embedding` 则从这里委派给 `crates/ollama-api-bindings/src/{completion,embedding}.rs`。
+
+5. **限流是自动的**：`create()` 返回前统一包 `rate_limit::new_completion(engine, model.rate_limit.request_per_minute)`，新分支只要走这条出口就自带限流，不要自己再包一层。
+
+6. **更新 MODEL_SPEC.md** 文档，说明 prompt_template 和 chat_template
+
+7. **添加 test**：`completion/mod.rs` 底部已有 `#[cfg(test)] mod tests`（测 `split_fim_prompt`），新 provider 的单测放同文件的对应模块内。
    ```rust
    #[tokio::test]
    async fn test_my_provider_completion() { ... }
