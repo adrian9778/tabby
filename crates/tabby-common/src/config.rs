@@ -164,6 +164,8 @@ pub fn is_embedding_service_enabled() -> bool {
 pub struct RepositoryConfig {
     git_url: String,
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub refs: Vec<String>,
 }
 
@@ -192,6 +194,10 @@ impl RepositoryConfig {
     }
 
     pub fn display_name(&self) -> String {
+        // 优先使用显式指定的 name（如 "leisure"），否则从 git_url 推导。
+        if let Some(name) = &self.name {
+            return name.clone();
+        }
         Self::resolve_dir_name(&self.git_url)
     }
 
@@ -658,6 +664,7 @@ mod tests {
     fn it_parses_local_dir() {
         let repo = RepositoryConfig {
             git_url: "file:///home/user".to_owned(),
+            name: None,
             refs: vec![],
         };
         let _ = repo.dir();
@@ -667,6 +674,7 @@ mod tests {
     fn test_repository_config_name() {
         let repo = RepositoryConfig {
             git_url: "https://github.com/TabbyML/tabby.git".to_owned(),
+            name: None,
             refs: vec![],
         };
         assert!(repo.dir().ends_with("https_github.com_TabbyML_tabby"));
