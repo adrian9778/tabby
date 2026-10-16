@@ -252,7 +252,7 @@ async fn api_router(
     args: &ServeArgs,
     config: &Config,
     logger: Arc<dyn EventLogger>,
-    _code: Option<Arc<dyn CodeSearch>>,
+    code: Option<Arc<dyn CodeSearch>>,
     completion_state: Option<CompletionService>,
     chat_state: Option<Arc<ChatState>>,
     webserver: Option<bool>,
@@ -352,7 +352,13 @@ async fn api_router(
     #[cfg(not(feature = "ee"))]
     routers.push(server_setting_router);
 
-    routers.push(tabby_mcp_server::routes(config));
+    if code.is_none() {
+        warn!("Embedding service is disabled: MCP `semantic_search` is not available");
+    }
+    if config.repositories.is_empty() {
+        warn!("No repositories configured: MCP code search endpoints are not mounted");
+    }
+    routers.push(tabby_mcp_server::routes(config, code));
 
     let mut root = Router::new();
     for router in routers {
