@@ -21,6 +21,7 @@ members = [
     "ee/tabby-db",
     "ee/tabby-db-macros",
     "ee/tabby-schema",
+    "crates/tabby-mcp-server",
 ]
 
 [workspace.package]

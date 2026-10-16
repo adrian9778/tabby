@@ -352,6 +352,8 @@ async fn api_router(
     #[cfg(not(feature = "ee"))]
     routers.push(server_setting_router);
 
+    routers.push(tabby_mcp_server::routes(config));
+
     let mut root = Router::new();
     for router in routers {
         root = root.merge(router);

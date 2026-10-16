@@ -1,0 +1,24 @@
+[package]
+name = "tabby-mcp-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+git2 = { workspace = true }
+rust-mcp-axum = "1"
+rust-mcp-sdk = { version = "1", default-features = false, features = [
+    "server",
+    "streamable-http",
+    "auth",
+] }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tabby-common = { path = "../tabby-common" }
+tabby-git = { path = "../tabby-git" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
