@@ -27,8 +27,16 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=MetalKit");
     }
     if cfg!(feature = "cuda") {
-        config.define("GGML_CUDA", "ON");
-        config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+        // llama.cpp requires nvcc for CUDA, which does not exist on Apple Silicon; the
+        // Metal backend configured above is the GPU path there. GGML_CUDA must be defined
+        // explicitly: omitting it lets a previously cached ON survive in CMakeCache.txt.
+        if cfg!(target_os = "macos") {
+            println!("cargo:warning=Ignoring `cuda` feature on macOS: no CUDA toolkit, using Metal instead");
+            config.define("GGML_CUDA", "OFF");
+        } else {
+            config.define("GGML_CUDA", "ON");
+            config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+        }
     }
     if cfg!(feature = "rocm") {
         let amd_gpu_targets: Vec<&str> = vec![
