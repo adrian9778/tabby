@@ -13,3 +13,7 @@ cargo-flamegraph.stacks
 
 # Qoder project-scoped settings (holds local MCP bearer token)
 .qoder/
+
+# multi-arch release build runbook (docs/runbook/build-binaries.sh) outputs
+/dist/
+/.runbook-cache/
